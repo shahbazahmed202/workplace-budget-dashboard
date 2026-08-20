@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Wallet, ReceiptText, FileBarChart2, Download,
   Settings as SettingsIcon, Plus, X, Pencil, Trash2, AlertTriangle,
   CheckCircle2, Search, TrendingUp, TrendingDown, Eye, Menu,
-  ChevronRight, RotateCcw, Info, Leaf
+  ChevronRight, RotateCcw, Info, Leaf, MoreVertical, ChevronDown
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RTooltip } from "recharts";
 
@@ -188,6 +188,60 @@ const inputStyle = {
   background: "#fff",
 };
 
+/* ---------------------------------- ROW DROPDOWN MENU ---------------------------------- */
+function RowMenu({ items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    const onEsc = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Open actions menu"
+        className="p-1.5 rounded-lg hover:bg-gray-100"
+        style={{ background: open ? "#EEF2F0" : "transparent" }}
+      >
+        <MoreVertical size={16} color={C.muted} />
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 mt-1 z-30 rounded-xl shadow-lg overflow-hidden"
+          style={{ background: C.card, border: `1px solid ${C.border}`, minWidth: 168 }}
+        >
+          {items.map((it) => {
+            const Icon = it.icon;
+            return (
+              <button
+                key={it.label}
+                onClick={() => { setOpen(false); it.onClick(); }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm font-medium text-left hover:bg-gray-50"
+                style={{ color: it.danger ? C.red : C.text }}
+              >
+                {Icon && <Icon size={14} color={it.danger ? C.red : C.muted} />}
+                {it.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------- APP ---------------------------------- */
 export default function Dashboard() {
   const [headers, setHeaders] = useState(SEED_HEADERS);
@@ -298,15 +352,15 @@ export default function Dashboard() {
   }
 
   function deleteHeader(id) {
-    const inUse = expenses.some((e) => e.headerId === id);
-    if (inUse) {
-      notify("Cannot delete — this header has linked expenses. Remove them first.", "error");
-      setDeleteHeaderId(null);
-      return;
-    }
+    const linked = expenses.filter((e) => e.headerId === id).length;
     setHeaders((prev) => prev.filter((h) => h.id !== id));
+    setExpenses((prev) => prev.filter((e) => e.headerId !== id));
     setDeleteHeaderId(null);
-    notify("Budget header deleted.");
+    notify(
+      linked > 0
+        ? `Category deleted along with ${linked} linked expense ${linked === 1 ? "entry" : "entries"}.`
+        : "Category deleted."
+    );
   }
 
   function resetDemoData() {
@@ -413,6 +467,9 @@ export default function Dashboard() {
               onEditExpense={(e) => setExpenseModal(e)}
               onDeleteExpense={(id) => setDeleteExpenseId(id)}
               onViewAll={() => setView("expenses")}
+              onAddHeader={() => setHeaderModal({})}
+              onEditHeader={(h) => setHeaderModal(h)}
+              onDeleteHeader={(id) => setDeleteHeaderId(id)}
             />
           )}
           {view === "headers" && (
@@ -465,8 +522,14 @@ export default function Dashboard() {
       )}
       {deleteHeaderId && (
         <ConfirmModal
-          title="Delete budget header?"
-          body="This cannot be undone. Headers with linked expenses cannot be deleted."
+          title="Delete this category?"
+          body={(() => {
+            const name = headerNameById[deleteHeaderId] || "this category";
+            const linked = expenses.filter((e) => e.headerId === deleteHeaderId).length;
+            return linked > 0
+              ? `"${name}" has ${linked} linked expense ${linked === 1 ? "entry" : "entries"}. Deleting the category will also delete ${linked === 1 ? "that entry" : "those entries"} and recalculate all totals. This cannot be undone.`
+              : `"${name}" will be permanently removed from the dashboard. This cannot be undone.`;
+          })()}
           onCancel={() => setDeleteHeaderId(null)}
           onConfirm={() => deleteHeader(deleteHeaderId)}
         />
@@ -500,9 +563,33 @@ function KPICard({ label, value, sub, icon: Icon, tone }) {
 }
 
 /* ---------------------------------- DASHBOARD VIEW ---------------------------------- */
-function DashboardView({ totals, headerStats, overBudgetHeaders, expenses, headerNameById, onAddExpense, onEditExpense, onDeleteExpense, onViewAll }) {
+function DashboardView({ totals, headerStats, overBudgetHeaders, expenses, headerNameById, onAddExpense, onEditExpense, onDeleteExpense, onViewAll, onAddHeader, onEditHeader, onDeleteHeader }) {
   const recent = [...expenses].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 6);
   const chartData = headerStats.filter((h) => h.used > 0).map((h) => ({ name: h.name, value: h.used }));
+
+  // Dropdown filter for the "Budget Overview by Header" card
+  const [catFilter, setCatFilter] = useState("all");
+  const FILTERS = [
+    { id: "all", label: "All Categories" },
+    { id: "over", label: "Over Budget" },
+    { id: "near", label: "Near Limit (80%+)" },
+    { id: "healthy", label: "Under 80%" },
+    { id: "unused", label: "Not Used Yet" },
+    { id: "active", label: "Active Only" },
+    { id: "inactive", label: "Inactive Only" },
+  ];
+
+  const visibleHeaders = useMemo(() => {
+    return headerStats.filter((h) => {
+      if (catFilter === "over") return h.over;
+      if (catFilter === "near") return !h.over && h.utilization >= 80;
+      if (catFilter === "healthy") return !h.over && h.utilization < 80;
+      if (catFilter === "unused") return h.used === 0;
+      if (catFilter === "active") return h.status === "Active";
+      if (catFilter === "inactive") return h.status !== "Active";
+      return true;
+    });
+  }, [headerStats, catFilter]);
 
   return (
     <div className="space-y-6">
@@ -525,17 +612,47 @@ function DashboardView({ totals, headerStats, overBudgetHeaders, expenses, heade
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         <div className="xl:col-span-2 rounded-2xl shadow-sm overflow-hidden" style={{ background: C.card, border: `1px solid ${C.border}` }}>
-          <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${C.border}` }}>
+          <div className="flex items-center justify-between gap-3 px-5 py-4 flex-wrap" style={{ borderBottom: `1px solid ${C.border}` }}>
             <h3 className="text-sm font-semibold" style={{ color: C.text }}>Budget Overview by Header</h3>
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <select
+                  value={catFilter}
+                  onChange={(e) => setCatFilter(e.target.value)}
+                  aria-label="Filter categories"
+                  style={{
+                    ...inputStyle,
+                    width: "auto",
+                    fontSize: 13,
+                    padding: "7px 30px 7px 12px",
+                    appearance: "none",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                    color: C.muted,
+                  }}
+                >
+                  {FILTERS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                </select>
+                <ChevronDown size={14} color={C.muted} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+              <button
+                onClick={onAddHeader}
+                className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold shrink-0"
+                style={{ background: C.greenLight, color: C.green }}
+              >
+                <Plus size={14} /> Add Category
+              </button>
+            </div>
           </div>
           <div className="divide-y" style={{ borderColor: C.border }}>
-            {headerStats.map((h) => (
+            {visibleHeaders.map((h) => (
               <div key={h.id} className="px-5 py-4 flex items-center gap-4" style={{ borderBottom: `1px solid ${C.border}` }}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                     <span className="text-sm font-semibold truncate" style={{ color: C.text }}>{h.name}</span>
                     {h.over && <Badge tone="red">Over Budget</Badge>}
                     {!h.over && h.utilization >= 80 && <Badge tone="amber">Near Limit</Badge>}
+                    {h.status !== "Active" && <Badge tone="muted">Inactive</Badge>}
                   </div>
                   <ProgressBar percent={h.utilization} over={h.over} />
                   <div className="flex justify-between mt-1.5 text-xs" style={{ color: C.muted }}>
@@ -547,8 +664,22 @@ function DashboardView({ totals, headerStats, overBudgetHeaders, expenses, heade
                   <div className="text-sm font-bold" style={{ color: h.over ? C.red : C.text }}>{h.utilization.toFixed(1)}%</div>
                   <div className="text-xs" style={{ color: h.remaining < 0 ? C.red : C.muted }}>{fmtPKR(Math.abs(h.remaining))} {h.remaining < 0 ? "over" : "left"}</div>
                 </div>
+                <RowMenu
+                  items={[
+                    { label: "Edit Category", icon: Pencil, onClick: () => onEditHeader(h) },
+                    { label: "Add Expense", icon: Plus, onClick: () => onAddExpense() },
+                    { label: "Delete Category", icon: Trash2, danger: true, onClick: () => onDeleteHeader(h.id) },
+                  ]}
+                />
               </div>
             ))}
+            {visibleHeaders.length === 0 && (
+              <div className="px-5 py-10 text-center text-sm" style={{ color: C.muted }}>
+                {headerStats.length === 0
+                  ? "No categories yet. Use “Add Category” to create your first one."
+                  : "No categories match this filter."}
+              </div>
+            )}
           </div>
         </div>
 
@@ -663,10 +794,12 @@ function HeadersView({ headerStats, onAdd, onEdit, onDelete }) {
                 </div>
                 <Badge tone={h.status === "Active" ? "green" : "muted"}>{h.status}</Badge>
               </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => onEdit(h)} className="p-1.5 rounded-lg hover:bg-gray-100"><Pencil size={14} color={C.muted} /></button>
-                <button onClick={() => onDelete(h.id)} className="p-1.5 rounded-lg hover:bg-gray-100"><Trash2 size={14} color={C.red} /></button>
-              </div>
+              <RowMenu
+                items={[
+                  { label: "Edit Category", icon: Pencil, onClick: () => onEdit(h) },
+                  { label: "Delete Category", icon: Trash2, danger: true, onClick: () => onDelete(h.id) },
+                ]}
+              />
             </div>
             <div className="flex items-center gap-4">
               <Gauge percent={h.utilization} size={92} stroke={9} over={h.over} />
